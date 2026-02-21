@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from pymongo import MongoClient
-from bson import ObjectId
 from datetime import datetime
-import os
 
 # ==== CONFIG ====
 MONGO_URI = "mongodb://localhost:27017/"
@@ -18,25 +18,43 @@ client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 collection = db[COLLECTION_NAME]
 
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ==== HELPERS ====
-def serialize_doc(doc):
+def serialize_track(doc):
+    """Return only safe, public fields to the frontend"""
     if not doc:
         return None
-
-    doc["id"] = str(doc["_id"])
-    del doc["_id"]
-
-    if isinstance(doc.get("date_added"), datetime):
-        doc["date_added"] = doc["date_added"].isoformat()
-
-    return doc
+    return {
+        "music_id": doc.get("music_id"),
+        "title": doc.get("title"),
+        "artist": doc.get("artist"),
+        "album": doc.get("album"),
+        "genres": doc.get("genres", []),
+        "release_date": doc.get("release_date"),
+        "audio_features": doc.get("audio_features", {}),
+        "sources": doc.get("sources", {}),
+        "date_added": doc.get("date_added").isoformat()
+        if isinstance(doc.get("date_added"), datetime)
+        else None,
+        "notes": doc.get("notes"),
+    }
 
 
 def build_search_query(
-    query: Optional[str],
-    artist: Optional[str],
-    genre: Optional[str],
+    query: Optional[str], artist: Optional[str], genre: Optional[str]
 ):
     filters = {}
 
@@ -46,10 +64,8 @@ def build_search_query(
             {"artist_lower": {"$regex": query.lower()}},
             {"album_lower": {"$regex": query.lower()}},
         ]
-
     if artist:
         filters["artist_lower"] = {"$regex": artist.lower()}
-
     if genre:
         filters["genres_lower"] = {"$regex": genre.lower()}
 
@@ -58,9 +74,7 @@ def build_search_query(
 
 # ==== MODELS ====
 class TrackResponse(BaseModel):
-    id: str
-    music_id: Optional[str]
-    music_file: str
+    music_id: Optional[str]  # <- optional now
     title: str
     artist: str
     album: Optional[str]
@@ -88,20 +102,24 @@ def list_tracks(
     limit: int = Query(50, le=500),
 ):
     mongo_query = build_search_query(query, artist, genre)
-
     cursor = collection.find(mongo_query).limit(limit)
-
-    results = [serialize_doc(doc) for doc in cursor]
-    return results
+    return [serialize_track(doc) for doc in cursor]
 
 
-@app.get("/tracks/{track_id}", response_model=TrackResponse)
-def get_track(track_id: str):
-    doc = collection.find_one({"_id": track_id})
+@app.get("/tracks/{music_id}", response_model=TrackResponse)
+def get_track_by_music_id(music_id: str):
+    doc = collection.find_one({"music_id": music_id})
     if not doc:
         raise HTTPException(status_code=404, detail="Track not found")
+    return serialize_track(doc)
 
-    return serialize_doc(doc)
+
+@app.get("/tracks/file/{music_id}")
+def stream_track_file(music_id: str):
+    doc = collection.find_one({"music_id": music_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return FileResponse(doc["music_file"], filename=f"{doc.get('title')}.mp3")
 
 
 @app.get("/artists")
@@ -114,13 +132,11 @@ def list_artists():
 def list_genres():
     genres = collection.distinct("genres")
     flat = set()
-
     for g in genres:
         if isinstance(g, list):
             flat.update(g)
         else:
             flat.add(g)
-
     return sorted(flat)
 
 
