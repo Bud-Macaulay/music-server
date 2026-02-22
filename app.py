@@ -5,9 +5,10 @@ from pydantic import BaseModel
 from typing import Optional, List
 from pymongo import MongoClient
 from datetime import datetime
+import os
 
 # ==== CONFIG ====
-MONGO_URI = "mongodb://localhost:27017/"
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb://localhost:27017/")
 DB_NAME = "musicdb"
 COLLECTION_NAME = "tracks"
 
@@ -21,6 +22,7 @@ collection = db[COLLECTION_NAME]
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://music-frontend:5173",
 ]
 
 app.add_middleware(
